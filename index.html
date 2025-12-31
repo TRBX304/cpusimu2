@@ -594,15 +594,25 @@
         }
 
         let pendingDelta = 0;
+        let coreWorkersCompleted = 0;
+        let tickInProgress = false;
 
         function handleCoreMessage(e) {
             if (e.data.type === 'ready') { readyWorkers++; checkReady(); }
+            else if (e.data.type === 'tick-done') {
+                coreWorkersCompleted++;
+                // 全Core Workerが完了したら次のtickを許可
+                if (coreWorkersCompleted >= coreWorkers.length) {
+                    tickInProgress = false;
+                }
+            }
         }
 
         function handleSchedulerMessage(e) {
             if (e.data.type === 'ready') { readyWorkers++; checkReady(); }
             else if (e.data.type === 'tick-done') {
                 // Scheduler完了後にCore Workersにtickを送る
+                coreWorkersCompleted = 0;
                 for (const w of coreWorkers) w.postMessage({ type: 'tick', delta: pendingDelta });
             }
         }
@@ -613,6 +623,7 @@
                 lastTickTime = startTime;
                 lastTpsTime = startTime;
                 lastRateTime = startTime;
+                tickInProgress = false;
                 tickInterval = setInterval(tick, 1000 / TICK_RATE);
                 requestAnimationFrame(updateUI);
             }
@@ -620,6 +631,10 @@
 
         function tick() {
             if (!isRunning || isPaused) return;
+            
+            // 前のtickがまだ処理中なら待つ
+            if (tickInProgress) return;
+            tickInProgress = true;
 
             const now = performance.now();
             const delta = now - lastTickTime;
