@@ -637,8 +637,6 @@
             // Schedulerを先に実行、完了後にCore Workersへ
             pendingDelta = delta;
             schedulerWorker.postMessage({ type: 'tick' });
-
-            if (Atomics.load(globalView, G_PROCESSED) >= totalTasks) complete();
         }
 
         function updateUI() {
@@ -674,6 +672,12 @@
             document.getElementById('perfTasksPerSec').textContent = tasksPerSec.toLocaleString();
             document.getElementById('activityBar').style.width = activityPercent + '%';
             document.getElementById('activityPercent').textContent = activityPercent;
+
+            // 完了判定（毎フレームチェック）
+            if (processed >= totalTasks) {
+                complete();
+                return;
+            }
 
             if (isRunning) requestAnimationFrame(updateUI);
         }
