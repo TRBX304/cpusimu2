@@ -521,9 +521,6 @@
         // タスク/秒計測用
         let lastProcessed = 0, lastRateTime = 0, tasksPerSec = 0;
 
-        // コア稼働率計測用
-        let totalActive = 0, activeReports = 0;
-
         const TICK_RATE = 120; // 高速化
 
         // DOM
@@ -594,18 +591,12 @@
             tpsCounter = 0;
             lastProcessed = 0;
             tasksPerSec = 0;
-            totalActive = 0;
-            activeReports = 0;
         }
 
         let pendingDelta = 0;
 
         function handleCoreMessage(e) {
             if (e.data.type === 'ready') { readyWorkers++; checkReady(); }
-            else if (e.data.type === 'tick-done') {
-                totalActive += e.data.active || 0;
-                activeReports++;
-            }
         }
 
         function handleSchedulerMessage(e) {
@@ -669,13 +660,9 @@
                 lastRateTime = now;
             }
 
-            // コア稼働率
-            let activityPercent = 0;
-            if (activeReports > 0) {
-                activityPercent = Math.round((totalActive / activeReports / cores) * 100);
-                totalActive = 0;
-                activeReports = 0;
-            }
+            // コア稼働率（SharedArrayBufferから直接計算）
+            const activeCount = countActive();
+            const activityPercent = Math.round((activeCount / cores) * 100);
 
             document.getElementById('progressBar').style.width = percent + '%';
             document.getElementById('progressPercent').textContent = percent.toFixed(1);
@@ -692,11 +679,25 @@
         }
 
         function countActive() {
-            let count = 0;
-            for (let i = 0; i < cores; i++) {
-                if (coreView[i * CORE_STRIDE + C_TASK_ID] >= 0) count++;
+            // 大規模コア対応：サンプリングで推定
+            // 1000コア以下は全数、それ以上はサンプリング
+            if (cores <= 1000) {
+                let count = 0;
+                for (let i = 0; i < cores; i++) {
+                    if (coreView[i * CORE_STRIDE + C_TASK_ID] >= 0) count++;
+                }
+                return count;
+            } else {
+                // 最大1000サンプルで推定
+                const sampleSize = 1000;
+                const step = Math.floor(cores / sampleSize);
+                let activeCount = 0;
+                for (let i = 0; i < cores; i += step) {
+                    if (coreView[i * CORE_STRIDE + C_TASK_ID] >= 0) activeCount++;
+                }
+                // サンプル比率から全体を推定
+                return Math.round((activeCount / sampleSize) * cores);
             }
-            return count;
         }
 
         function complete() {
