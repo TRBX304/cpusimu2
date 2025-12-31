@@ -210,6 +210,10 @@
                         <div class="value blue" id="statCores">0</div>
                     </div>
                     <div class="stat-box">
+                        <div class="label">クロック</div>
+                        <div class="value purple" id="statClock">0 MHz</div>
+                    </div>
+                    <div class="stat-box">
                         <div class="label">処理済み</div>
                         <div class="value green" id="statProcessed">0</div>
                     </div>
@@ -219,7 +223,7 @@
                     </div>
                     <div class="stat-box">
                         <div class="label">経過時間</div>
-                        <div class="value purple" id="statTime">0.0s</div>
+                        <div class="value" id="statTime">0.0s</div>
                     </div>
                 </div>
 
@@ -378,10 +382,11 @@
         const algo = Atomics.load(globalView, G_ALGO);
 
         if (algo === 0) {
-            // FCFS
+            // FCFS - 全コアをチェックし、空きコアにタスク割当
             let head = Atomics.load(globalView, G_QUEUE_HEAD);
             const tail = Atomics.load(globalView, G_QUEUE_TAIL);
-            for (let i = 0; i < cores && head < tail; i++) {
+            for (let i = 0; i < cores; i++) {
+                if (head >= tail) break; // キュー空なら終了
                 const coreBase = i * CORE_STRIDE;
                 if (coreView[coreBase + C_TASK_ID] === -1) {
                     const taskBase = head * TASK_STRIDE;
@@ -394,9 +399,10 @@
             }
             Atomics.store(globalView, G_QUEUE_HEAD, head);
         } else {
-            // SJF
+            // SJF - 全コアをチェックし、空きコアにタスク割当
             let ptr = 0;
-            for (let i = 0; i < cores && ptr < sjfLength; i++) {
+            for (let i = 0; i < cores; i++) {
+                if (ptr >= sjfLength) break; // キュー空なら終了
                 const coreBase = i * CORE_STRIDE;
                 if (coreView[coreBase + C_TASK_ID] === -1) {
                     const taskBase = sjfIndices[ptr] * TASK_STRIDE;
@@ -556,13 +562,14 @@
             completeMessage.classList.add('hidden');
 
             document.getElementById('statCores').textContent = cores.toLocaleString();
+            document.getElementById('statClock').textContent = clockSpeed.toLocaleString() + ' MHz';
             document.getElementById('totalCount').textContent = totalTasks.toLocaleString();
 
             readyWorkers = 0;
             expectedWorkers = 1 + numWorkers;
 
             schedulerWorker = createWorker('scheduler-worker');
-            schedulerWorker.onmessage = (e) => { if (e.data.type === 'ready') { readyWorkers++; checkReady(); } };
+            schedulerWorker.onmessage = handleSchedulerMessage;
             schedulerWorker.postMessage({
                 type: 'init', sharedBuffer, cores, totalTasks, maxTasks: totalTasks, clockSpeed, algorithm
             });
@@ -591,11 +598,21 @@
             activeReports = 0;
         }
 
+        let pendingDelta = 0;
+
         function handleCoreMessage(e) {
             if (e.data.type === 'ready') { readyWorkers++; checkReady(); }
             else if (e.data.type === 'tick-done') {
                 totalActive += e.data.active || 0;
                 activeReports++;
+            }
+        }
+
+        function handleSchedulerMessage(e) {
+            if (e.data.type === 'ready') { readyWorkers++; checkReady(); }
+            else if (e.data.type === 'tick-done') {
+                // Scheduler完了後にCore Workersにtickを送る
+                for (const w of coreWorkers) w.postMessage({ type: 'tick', delta: pendingDelta });
             }
         }
 
@@ -626,7 +643,8 @@
                 lastTpsTime = now;
             }
 
-            for (const w of coreWorkers) w.postMessage({ type: 'tick', delta });
+            // Schedulerを先に実行、完了後にCore Workersへ
+            pendingDelta = delta;
             schedulerWorker.postMessage({ type: 'tick' });
 
             if (Atomics.load(globalView, G_PROCESSED) >= totalTasks) complete();
