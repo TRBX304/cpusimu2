@@ -447,27 +447,25 @@
             endCore = msg.endCore;
             self.postMessage({ type: 'ready' });
         } else if (msg.type === 'tick') {
-            processTick(msg.delta);
+            processTick(msg.delta, msg.tickId);
         }
     };
 
-    function processTick(delta) {
+    function processTick(delta, tickId) {
         if (!Atomics.load(globalView, G_RUNNING) || Atomics.load(globalView, G_PAUSED)) {
-            self.postMessage({ type: 'tick-done', completed: 0, active: 0 });
+            self.postMessage({ type: 'tick-done', tickId: tickId });
             return;
         }
 
         const clockSpeed = Atomics.load(globalView, G_CLOCK);
         const deltaK = Math.floor(delta * 1000);
         let completed = 0;
-        let active = 0;
 
         for (let i = startCore; i < endCore; i++) {
             const base = i * CORE_STRIDE;
             const taskId = coreView[base + C_TASK_ID];
             if (taskId < 0) continue;
 
-            active++;
             const timeSpent = coreView[base + C_TIME_SPENT] + deltaK;
             coreView[base + C_TIME_SPENT] = timeSpent;
 
@@ -483,7 +481,7 @@
         }
 
         if (completed > 0) Atomics.add(globalView, G_PROCESSED, completed);
-        self.postMessage({ type: 'tick-done', completed, active });
+        self.postMessage({ type: 'tick-done', tickId: tickId });
     }
     </script>
 
@@ -596,14 +594,18 @@
         let pendingDelta = 0;
         let coreWorkersCompleted = 0;
         let tickInProgress = false;
+        let currentTickId = 0;
 
         function handleCoreMessage(e) {
             if (e.data.type === 'ready') { readyWorkers++; checkReady(); }
             else if (e.data.type === 'tick-done') {
-                coreWorkersCompleted++;
-                // 全Core Workerが完了したら次のtickを許可
-                if (coreWorkersCompleted >= coreWorkers.length) {
-                    tickInProgress = false;
+                // 現在のtickの応答のみカウント
+                if (e.data.tickId === currentTickId) {
+                    coreWorkersCompleted++;
+                    // 全Core Workerが完了したら次のtickを許可
+                    if (coreWorkersCompleted >= coreWorkers.length) {
+                        tickInProgress = false;
+                    }
                 }
             }
         }
@@ -613,7 +615,9 @@
             else if (e.data.type === 'tick-done') {
                 // Scheduler完了後にCore Workersにtickを送る
                 coreWorkersCompleted = 0;
-                for (const w of coreWorkers) w.postMessage({ type: 'tick', delta: pendingDelta });
+                for (const w of coreWorkers) {
+                    w.postMessage({ type: 'tick', delta: pendingDelta, tickId: currentTickId });
+                }
             }
         }
 
@@ -624,6 +628,7 @@
                 lastTpsTime = startTime;
                 lastRateTime = startTime;
                 tickInProgress = false;
+                currentTickId = 0;
                 tickInterval = setInterval(tick, 1000 / TICK_RATE);
                 requestAnimationFrame(updateUI);
             }
@@ -635,6 +640,7 @@
             // 前のtickがまだ処理中なら待つ
             if (tickInProgress) return;
             tickInProgress = true;
+            currentTickId++;
 
             const now = performance.now();
             const delta = now - lastTickTime;
