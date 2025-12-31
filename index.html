@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>並列CPUスケジューラ（ベンチマーク版）</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #1e293b 0%, #581c87 50%, #1e293b 100%);
+            min-height: 100vh;
+            padding: 20px; color: white;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 24px; }
+        .header h1 { font-size: 2rem; margin-bottom: 6px; }
+        .header p { color: #c084fc; }
+
+        .panel {
+            background: #1e293b;
+            border: 2px solid rgba(168,85,247,0.25);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .input-group { margin-bottom: 14px; }
+        .input-group label { display:block; margin-bottom:6px; font-weight:bold; }
+        .input-group input, .input-group select {
+            width:100%; padding:10px; font-size:1rem; background:#334155; border:1px solid rgba(168,85,247,0.25);
+            border-radius:6px; color:white;
+        }
+        .btn { cursor:pointer; border:none; border-radius:8px; padding:12px 20px; font-weight:bold; font-size: 1rem; }
+        .btn-start { background: linear-gradient(135deg,#16a34a,#059669); color:white; }
+        .btn-reset { background:#dc2626; color:white; }
+        .btn-pause { background:#f59e0b; color:white; }
+
+        .warning-box { background: #7c2d12; border: 1px solid #ea580c; padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 0.9rem; }
+
+        .progress-section { margin: 20px 0; }
+        .progress-label { 
+            display: flex; 
+            justify-content: space-between; 
+            margin-bottom: 8px;
+            font-size: 1.1rem;
+        }
+        .progress-bar-outer {
+            background: #334155;
+            border-radius: 10px;
+            height: 40px;
+            overflow: hidden;
+            position: relative;
+        }
+        .progress-bar-inner {
+            background: linear-gradient(90deg, #10b981, #059669);
+            height: 100%;
+            width: 0%;
+            transition: width 0.1s linear;
+            border-radius: 10px;
+        }
+        .progress-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-weight: bold;
+            font-size: 1.2rem;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin: 16px 0;
+        }
+        .stat-box {
+            background: #111827;
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+        .stat-box .label {
+            color: #c084fc;
+            font-size: 0.85rem;
+            margin-bottom: 4px;
+        }
+        .stat-box .value {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+        .stat-box .value.green { color: #10b981; }
+        .stat-box .value.yellow { color: #fbbf24; }
+        .stat-box .value.blue { color: #3b82f6; }
+        .stat-box .value.purple { color: #a855f7; }
+
+        .perf-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .perf-item {
+            background: rgba(0,0,0,0.3);
+            padding: 10px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .perf-item .label { color: #94a3b8; font-size: 0.75rem; }
+        .perf-item .value { font-size: 1.1rem; font-weight: bold; color: #c084fc; }
+
+        .complete-message { 
+            background: linear-gradient(135deg, #16a34a, #059669);
+            border-radius: 12px; 
+            padding: 20px; 
+            text-align: center; 
+            font-size: 1.3rem;
+            font-weight: bold; 
+        }
+        .complete-message .time { font-size: 2rem; margin: 10px 0; }
+
+        .hidden { display:none; }
+
+        .core-activity {
+            margin-top: 16px;
+            padding: 12px;
+            background: #111827;
+            border-radius: 8px;
+        }
+        .activity-bar-outer {
+            background: #334155;
+            border-radius: 6px;
+            height: 24px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+        .activity-bar-inner {
+            background: linear-gradient(90deg, #f59e0b, #ea580c);
+            height: 100%;
+            width: 0%;
+            transition: width 0.1s linear;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 ベンチマークモード</h1>
+            <p>描画なし・計算特化版</p>
+        </div>
+
+        <div id="setupScreen" class="panel">
+            <div class="warning-box">
+                ⚠️ SharedArrayBuffer が必要です（COOP/COEPヘッダー）
+            </div>
+
+            <div class="input-group">
+                <label>🖥️ コア数</label>
+                <input id="coresInput" type="number" value="10000" min="1">
+            </div>
+
+            <div class="input-group">
+                <label>⚡ クロック速度 (MHz)</label>
+                <input id="clockInput" type="number" value="2000" min="100" step="100">
+            </div>
+
+            <div class="input-group">
+                <label>📋 総タスク数</label>
+                <input id="tasksInput" type="number" value="1000000" min="1" step="10000">
+            </div>
+
+            <div class="input-group">
+                <label>🔀 スケジューリングアルゴリズム</label>
+                <select id="algoSelect">
+                    <option value="fcfs">FCFS（先着順）</option>
+                    <option value="sjf">SJF（最短ジョブ優先）</option>
+                </select>
+            </div>
+
+            <div class="input-group">
+                <label>🔧 Core Worker数</label>
+                <input id="workersInput" type="number" value="4" min="1" max="16">
+            </div>
+
+            <div style="display:flex; gap:12px; margin-top:16px;">
+                <button id="startBtn" class="btn btn-start">▶️ 開始</button>
+                <button id="resetBtn" class="btn btn-reset">🔄 リセット</button>
+            </div>
+
+            <div id="sabStatus" style="margin-top: 12px; padding: 10px; border-radius: 6px;"></div>
+        </div>
+
+        <div id="simScreen" class="hidden">
+            <div class="panel">
+                <div class="progress-section">
+                    <div class="progress-label">
+                        <span>タスク進捗</span>
+                        <span><span id="progressPercent">0</span>%</span>
+                    </div>
+                    <div class="progress-bar-outer">
+                        <div class="progress-bar-inner" id="progressBar"></div>
+                        <div class="progress-text"><span id="processedCount">0</span> / <span id="totalCount">0</span></div>
+                    </div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-box">
+                        <div class="label">コア数</div>
+                        <div class="value blue" id="statCores">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="label">処理済み</div>
+                        <div class="value green" id="statProcessed">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="label">残りタスク</div>
+                        <div class="value yellow" id="statRemaining">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="label">経過時間</div>
+                        <div class="value purple" id="statTime">0.0s</div>
+                    </div>
+                </div>
+
+                <div class="core-activity">
+                    <div style="display:flex; justify-content:space-between;">
+                        <span>コア稼働率</span>
+                        <span><span id="activityPercent">0</span>%</span>
+                    </div>
+                    <div class="activity-bar-outer">
+                        <div class="activity-bar-inner" id="activityBar"></div>
+                    </div>
+                </div>
+
+                <div class="perf-grid">
+                    <div class="perf-item">
+                        <div class="label">TICK</div>
+                        <div class="value" id="perfTick">0</div>
+                    </div>
+                    <div class="perf-item">
+                        <div class="label">TPS</div>
+                        <div class="value" id="perfTps">0</div>
+                    </div>
+                    <div class="perf-item">
+                        <div class="label">タスク/秒</div>
+                        <div class="value" id="perfTasksPerSec">0</div>
+                    </div>
+                    <div class="perf-item">
+                        <div class="label">Workers</div>
+                        <div class="value" id="perfWorkers">0</div>
+                    </div>
+                    <div class="perf-item">
+                        <div class="label">SAB</div>
+                        <div class="value" id="perfSab">0 MB</div>
+                    </div>
+                </div>
+
+                <div style="display:flex; gap:12px; margin-top:16px;">
+                    <button id="pauseBtn" class="btn btn-pause">⏸️ 一時停止</button>
+                    <button id="homeBtn" class="btn btn-reset">🏠 戻る</button>
+                </div>
+            </div>
+
+            <div id="completeMessage" class="panel complete-message hidden">
+                🎉 完了！<br>
+                <div class="time" id="finalTime">0.00s</div>
+                <span id="finalCount">0</span> タスク処理 | 
+                <span id="finalRate">0</span> タスク/秒
+            </div>
+        </div>
+    </div>
+
+    <!-- Scheduler Worker -->
+    <script id="scheduler-worker" type="text/js-worker">
+    'use strict';
+
+    const GLOBAL_SIZE = 16;
+    const CORE_STRIDE = 8;
+    const TASK_STRIDE = 4;
+
+    const G_TICK = 0, G_RUNNING = 1, G_PAUSED = 2, G_PROCESSED = 3;
+    const G_QUEUE_HEAD = 4, G_QUEUE_TAIL = 5, G_CLOCK = 6, G_ALGO = 7;
+    const G_CORE_COUNT = 8, G_TOTAL_TASKS = 9;
+
+    const C_TASK_ID = 0, C_TIME_SPENT = 1, C_PROGRESS = 2, C_LOAD = 3;
+    const C_TASK_DURATION = 4, C_TASK_WEIGHT = 5;
+
+    const T_ID = 0, T_DURATION = 1, T_WEIGHT = 2;
+
+    let globalView, coreView, queueView;
+    let sjfIndices = null, sjfLength = 0;
+
+    self.onmessage = function(e) {
+        const msg = e.data;
+        switch (msg.type) {
+            case 'init': initScheduler(msg); break;
+            case 'tick': processTick(); break;
+            case 'pause': Atomics.store(globalView, G_PAUSED, 1); break;
+            case 'resume': Atomics.store(globalView, G_PAUSED, 0); break;
+            case 'stop': Atomics.store(globalView, G_RUNNING, 0); break;
+        }
+    };
+
+    function initScheduler(msg) {
+        const { sharedBuffer, cores, totalTasks, maxTasks, clockSpeed, algorithm } = msg;
+
+        globalView = new Int32Array(sharedBuffer, 0, GLOBAL_SIZE);
+        coreView = new Int32Array(sharedBuffer, GLOBAL_SIZE * 4, cores * CORE_STRIDE);
+        queueView = new Int32Array(sharedBuffer, (GLOBAL_SIZE + cores * CORE_STRIDE) * 4, maxTasks * TASK_STRIDE);
+
+        Atomics.store(globalView, G_TICK, 0);
+        Atomics.store(globalView, G_RUNNING, 0);
+        Atomics.store(globalView, G_PAUSED, 0);
+        Atomics.store(globalView, G_PROCESSED, 0);
+        Atomics.store(globalView, G_QUEUE_HEAD, 0);
+        Atomics.store(globalView, G_QUEUE_TAIL, 0);
+        Atomics.store(globalView, G_CLOCK, clockSpeed);
+        Atomics.store(globalView, G_ALGO, algorithm === 'sjf' ? 1 : 0);
+        Atomics.store(globalView, G_CORE_COUNT, cores);
+        Atomics.store(globalView, G_TOTAL_TASKS, totalTasks);
+
+        for (let i = 0; i < cores; i++) {
+            coreView[i * CORE_STRIDE + C_TASK_ID] = -1;
+        }
+
+        // タスク生成（高速LCG）
+        let seed = Date.now();
+        const lcg = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+
+        for (let i = 0; i < totalTasks; i++) {
+            const base = i * TASK_STRIDE;
+            queueView[base + T_ID] = i;
+            queueView[base + T_DURATION] = Math.floor(lcg() * 2000000 + 500000);
+            queueView[base + T_WEIGHT] = Math.floor(lcg() * 1500 + 500);
+        }
+
+        Atomics.store(globalView, G_QUEUE_TAIL, totalTasks);
+
+        // SJF用ソート
+        if (algorithm === 'sjf') {
+            sjfIndices = new Int32Array(totalTasks);
+            for (let i = 0; i < totalTasks; i++) sjfIndices[i] = i;
+            
+            // インラインクイックソート
+            const stack = [[0, totalTasks - 1]];
+            while (stack.length) {
+                const [lo, hi] = stack.pop();
+                if (lo >= hi) continue;
+                const pivotBase = sjfIndices[hi] * TASK_STRIDE;
+                const pivotCost = queueView[pivotBase + T_DURATION] * queueView[pivotBase + T_WEIGHT];
+                let i = lo - 1;
+                for (let j = lo; j < hi; j++) {
+                    const base = sjfIndices[j] * TASK_STRIDE;
+                    if (queueView[base + T_DURATION] * queueView[base + T_WEIGHT] <= pivotCost) {
+                        i++;
+                        [sjfIndices[i], sjfIndices[j]] = [sjfIndices[j], sjfIndices[i]];
+                    }
+                }
+                [sjfIndices[i + 1], sjfIndices[hi]] = [sjfIndices[hi], sjfIndices[i + 1]];
+                stack.push([lo, i], [i + 2, hi]);
+            }
+            sjfLength = totalTasks;
+        }
+
+        Atomics.store(globalView, G_RUNNING, 1);
+        self.postMessage({ type: 'ready' });
+    }
+
+    function processTick() {
+        if (!Atomics.load(globalView, G_RUNNING) || Atomics.load(globalView, G_PAUSED)) {
+            self.postMessage({ type: 'tick-done' });
+            return;
+        }
+
+        Atomics.add(globalView, G_TICK, 1);
+        const cores = Atomics.load(globalView, G_CORE_COUNT);
+        const algo = Atomics.load(globalView, G_ALGO);
+
+        if (algo === 0) {
+            // FCFS
+            let head = Atomics.load(globalView, G_QUEUE_HEAD);
+            const tail = Atomics.load(globalView, G_QUEUE_TAIL);
+            for (let i = 0; i < cores && head < tail; i++) {
+                const coreBase = i * CORE_STRIDE;
+                if (coreView[coreBase + C_TASK_ID] === -1) {
+                    const taskBase = head * TASK_STRIDE;
+                    coreView[coreBase + C_TASK_ID] = queueView[taskBase + T_ID];
+                    coreView[coreBase + C_TASK_DURATION] = queueView[taskBase + T_DURATION];
+                    coreView[coreBase + C_TASK_WEIGHT] = queueView[taskBase + T_WEIGHT];
+                    coreView[coreBase + C_TIME_SPENT] = 0;
+                    head++;
+                }
+            }
+            Atomics.store(globalView, G_QUEUE_HEAD, head);
+        } else {
+            // SJF
+            let ptr = 0;
+            for (let i = 0; i < cores && ptr < sjfLength; i++) {
+                const coreBase = i * CORE_STRIDE;
+                if (coreView[coreBase + C_TASK_ID] === -1) {
+                    const taskBase = sjfIndices[ptr] * TASK_STRIDE;
+                    coreView[coreBase + C_TASK_ID] = queueView[taskBase + T_ID];
+                    coreView[coreBase + C_TASK_DURATION] = queueView[taskBase + T_DURATION];
+                    coreView[coreBase + C_TASK_WEIGHT] = queueView[taskBase + T_WEIGHT];
+                    coreView[coreBase + C_TIME_SPENT] = 0;
+                    ptr++;
+                }
+            }
+            if (ptr > 0) {
+                sjfIndices.copyWithin(0, ptr);
+                sjfLength -= ptr;
+                Atomics.add(globalView, G_QUEUE_HEAD, ptr);
+            }
+        }
+
+        self.postMessage({ type: 'tick-done' });
+    }
+    </script>
+
+    <!-- Core Worker -->
+    <script id="core-worker" type="text/js-worker">
+    'use strict';
+
+    const GLOBAL_SIZE = 16;
+    const CORE_STRIDE = 8;
+
+    const G_RUNNING = 1, G_PAUSED = 2, G_PROCESSED = 3, G_CLOCK = 6, G_CORE_COUNT = 8;
+    const C_TASK_ID = 0, C_TIME_SPENT = 1, C_TASK_DURATION = 4, C_TASK_WEIGHT = 5;
+
+    let globalView, coreView;
+    let startCore, endCore;
+
+    self.onmessage = function(e) {
+        const msg = e.data;
+        if (msg.type === 'init') {
+            globalView = new Int32Array(msg.sharedBuffer, 0, GLOBAL_SIZE);
+            const cores = Atomics.load(globalView, G_CORE_COUNT);
+            coreView = new Int32Array(msg.sharedBuffer, GLOBAL_SIZE * 4, cores * CORE_STRIDE);
+            startCore = msg.startCore;
+            endCore = msg.endCore;
+            self.postMessage({ type: 'ready' });
+        } else if (msg.type === 'tick') {
+            processTick(msg.delta);
+        }
+    };
+
+    function processTick(delta) {
+        if (!Atomics.load(globalView, G_RUNNING) || Atomics.load(globalView, G_PAUSED)) {
+            self.postMessage({ type: 'tick-done', completed: 0, active: 0 });
+            return;
+        }
+
+        const clockSpeed = Atomics.load(globalView, G_CLOCK);
+        const deltaK = Math.floor(delta * 1000);
+        let completed = 0;
+        let active = 0;
+
+        for (let i = startCore; i < endCore; i++) {
+            const base = i * CORE_STRIDE;
+            const taskId = coreView[base + C_TASK_ID];
+            if (taskId < 0) continue;
+
+            active++;
+            const timeSpent = coreView[base + C_TIME_SPENT] + deltaK;
+            coreView[base + C_TIME_SPENT] = timeSpent;
+
+            const duration = coreView[base + C_TASK_DURATION];
+            const weight = coreView[base + C_TASK_WEIGHT];
+            const effectiveDuration = Math.floor((duration * weight) / clockSpeed);
+
+            if (timeSpent >= effectiveDuration) {
+                coreView[base + C_TASK_ID] = -1;
+                coreView[base + C_TIME_SPENT] = 0;
+                completed++;
+            }
+        }
+
+        if (completed > 0) Atomics.add(globalView, G_PROCESSED, completed);
+        self.postMessage({ type: 'tick-done', completed, active });
+    }
+    </script>
+
+    <!-- Main Thread -->
+    <script>
+    (function() {
+        'use strict';
+
+        const sabSupported = typeof SharedArrayBuffer !== 'undefined';
+        const sabStatus = document.getElementById('sabStatus');
+        
+        if (sabSupported) {
+            sabStatus.style.background = '#166534';
+            sabStatus.innerHTML = '✅ SharedArrayBuffer OK';
+        } else {
+            sabStatus.style.background = '#991b1b';
+            sabStatus.innerHTML = '❌ SharedArrayBuffer 不可';
+            document.getElementById('startBtn').disabled = true;
+        }
+
+        const GLOBAL_SIZE = 16, CORE_STRIDE = 8, TASK_STRIDE = 4;
+        const G_PROCESSED = 3, G_QUEUE_HEAD = 4, G_QUEUE_TAIL = 5, G_CORE_COUNT = 8;
+        const C_TASK_ID = 0;
+
+        let sharedBuffer, globalView, coreView;
+        let schedulerWorker, coreWorkers = [];
+
+        let cores, totalTasks, isRunning = false, isPaused = false;
+        let readyWorkers = 0, expectedWorkers = 0;
+
+        let tickInterval, lastTickTime;
+        let tickCount = 0, tpsCounter = 0, lastTpsTime = 0;
+        let startTime = 0;
+
+        // タスク/秒計測用
+        let lastProcessed = 0, lastRateTime = 0, tasksPerSec = 0;
+
+        // コア稼働率計測用
+        let totalActive = 0, activeReports = 0;
+
+        const TICK_RATE = 120; // 高速化
+
+        // DOM
+        const setupScreen = document.getElementById('setupScreen');
+        const simScreen = document.getElementById('simScreen');
+        const completeMessage = document.getElementById('completeMessage');
+
+        function createWorker(id) {
+            const code = document.getElementById(id).textContent;
+            return new Worker(URL.createObjectURL(new Blob([code], { type: 'application/javascript' })));
+        }
+
+        document.getElementById('startBtn').addEventListener('click', startSimulation);
+        document.getElementById('resetBtn').addEventListener('click', resetSimulation);
+        document.getElementById('pauseBtn').addEventListener('click', togglePause);
+        document.getElementById('homeBtn').addEventListener('click', resetSimulation);
+
+        function startSimulation() {
+            if (!sabSupported) return;
+
+            cores = Math.max(1, parseInt(document.getElementById('coresInput').value) || 10000);
+            const clockSpeed = Math.max(100, parseInt(document.getElementById('clockInput').value) || 2000);
+            totalTasks = Math.max(1, parseInt(document.getElementById('tasksInput').value) || 1000000);
+            const numWorkers = Math.max(1, Math.min(16, parseInt(document.getElementById('workersInput').value) || 4));
+            const algorithm = document.getElementById('algoSelect').value;
+
+            const totalBytes = (GLOBAL_SIZE + cores * CORE_STRIDE + totalTasks * TASK_STRIDE) * 4;
+            document.getElementById('perfSab').textContent = (totalBytes / 1024 / 1024).toFixed(1) + ' MB';
+
+            sharedBuffer = new SharedArrayBuffer(totalBytes);
+            globalView = new Int32Array(sharedBuffer, 0, GLOBAL_SIZE);
+            coreView = new Int32Array(sharedBuffer, GLOBAL_SIZE * 4, cores * CORE_STRIDE);
+
+            setupScreen.classList.add('hidden');
+            simScreen.classList.remove('hidden');
+            completeMessage.classList.add('hidden');
+
+            document.getElementById('statCores').textContent = cores.toLocaleString();
+            document.getElementById('totalCount').textContent = totalTasks.toLocaleString();
+
+            readyWorkers = 0;
+            expectedWorkers = 1 + numWorkers;
+
+            schedulerWorker = createWorker('scheduler-worker');
+            schedulerWorker.onmessage = (e) => { if (e.data.type === 'ready') { readyWorkers++; checkReady(); } };
+            schedulerWorker.postMessage({
+                type: 'init', sharedBuffer, cores, totalTasks, maxTasks: totalTasks, clockSpeed, algorithm
+            });
+
+            coreWorkers = [];
+            const perWorker = Math.ceil(cores / numWorkers);
+            for (let i = 0; i < numWorkers; i++) {
+                const start = i * perWorker;
+                const end = Math.min(start + perWorker, cores);
+                if (start >= cores) break;
+
+                const w = createWorker('core-worker');
+                w.onmessage = handleCoreMessage;
+                w.postMessage({ type: 'init', sharedBuffer, startCore: start, endCore: end });
+                coreWorkers.push(w);
+            }
+
+            document.getElementById('perfWorkers').textContent = `1+${coreWorkers.length}`;
+            isRunning = true;
+            isPaused = false;
+            tickCount = 0;
+            tpsCounter = 0;
+            lastProcessed = 0;
+            tasksPerSec = 0;
+            totalActive = 0;
+            activeReports = 0;
+        }
+
+        function handleCoreMessage(e) {
+            if (e.data.type === 'ready') { readyWorkers++; checkReady(); }
+            else if (e.data.type === 'tick-done') {
+                totalActive += e.data.active || 0;
+                activeReports++;
+            }
+        }
+
+        function checkReady() {
+            if (readyWorkers >= expectedWorkers) {
+                startTime = performance.now();
+                lastTickTime = startTime;
+                lastTpsTime = startTime;
+                lastRateTime = startTime;
+                tickInterval = setInterval(tick, 1000 / TICK_RATE);
+                requestAnimationFrame(updateUI);
+            }
+        }
+
+        function tick() {
+            if (!isRunning || isPaused) return;
+
+            const now = performance.now();
+            const delta = now - lastTickTime;
+            lastTickTime = now;
+
+            tickCount++;
+            tpsCounter++;
+
+            if (now - lastTpsTime >= 1000) {
+                document.getElementById('perfTps').textContent = tpsCounter;
+                tpsCounter = 0;
+                lastTpsTime = now;
+            }
+
+            for (const w of coreWorkers) w.postMessage({ type: 'tick', delta });
+            schedulerWorker.postMessage({ type: 'tick' });
+
+            if (Atomics.load(globalView, G_PROCESSED) >= totalTasks) complete();
+        }
+
+        function updateUI() {
+            if (!sharedBuffer) return;
+
+            const now = performance.now();
+            const elapsed = (now - startTime) / 1000;
+            const processed = Atomics.load(globalView, G_PROCESSED);
+            const head = Atomics.load(globalView, G_QUEUE_HEAD);
+            const tail = Atomics.load(globalView, G_QUEUE_TAIL);
+            const remaining = (tail - head) + countActive();
+
+            const percent = Math.min(100, (processed / totalTasks) * 100);
+
+            // タスク/秒
+            if (now - lastRateTime >= 500) {
+                tasksPerSec = Math.round((processed - lastProcessed) / ((now - lastRateTime) / 1000));
+                lastProcessed = processed;
+                lastRateTime = now;
+            }
+
+            // コア稼働率
+            let activityPercent = 0;
+            if (activeReports > 0) {
+                activityPercent = Math.round((totalActive / activeReports / cores) * 100);
+                totalActive = 0;
+                activeReports = 0;
+            }
+
+            document.getElementById('progressBar').style.width = percent + '%';
+            document.getElementById('progressPercent').textContent = percent.toFixed(1);
+            document.getElementById('processedCount').textContent = processed.toLocaleString();
+            document.getElementById('statProcessed').textContent = processed.toLocaleString();
+            document.getElementById('statRemaining').textContent = remaining.toLocaleString();
+            document.getElementById('statTime').textContent = elapsed.toFixed(1) + 's';
+            document.getElementById('perfTick').textContent = tickCount.toLocaleString();
+            document.getElementById('perfTasksPerSec').textContent = tasksPerSec.toLocaleString();
+            document.getElementById('activityBar').style.width = activityPercent + '%';
+            document.getElementById('activityPercent').textContent = activityPercent;
+
+            if (isRunning) requestAnimationFrame(updateUI);
+        }
+
+        function countActive() {
+            let count = 0;
+            for (let i = 0; i < cores; i++) {
+                if (coreView[i * CORE_STRIDE + C_TASK_ID] >= 0) count++;
+            }
+            return count;
+        }
+
+        function complete() {
+            isRunning = false;
+            clearInterval(tickInterval);
+
+            const elapsed = (performance.now() - startTime) / 1000;
+            const processed = Atomics.load(globalView, G_PROCESSED);
+            const rate = Math.round(processed / elapsed);
+
+            document.getElementById('finalTime').textContent = elapsed.toFixed(2) + 's';
+            document.getElementById('finalCount').textContent = processed.toLocaleString();
+            document.getElementById('finalRate').textContent = rate.toLocaleString();
+            completeMessage.classList.remove('hidden');
+        }
+
+        function togglePause() {
+            if (!isRunning) return;
+            isPaused = !isPaused;
+            document.getElementById('pauseBtn').textContent = isPaused ? '▶️ 再開' : '⏸️ 一時停止';
+            schedulerWorker.postMessage({ type: isPaused ? 'pause' : 'resume' });
+        }
+
+        function resetSimulation() {
+            isRunning = false;
+            isPaused = false;
+            clearInterval(tickInterval);
+            if (schedulerWorker) { schedulerWorker.terminate(); schedulerWorker = null; }
+            coreWorkers.forEach(w => w.terminate());
+            coreWorkers = [];
+            sharedBuffer = globalView = coreView = null;
+            setupScreen.classList.remove('hidden');
+            simScreen.classList.add('hidden');
+            document.getElementById('pauseBtn').textContent = '⏸️ 一時停止';
+        }
+    })();
+    </script>
+</body>
+</html>
